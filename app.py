@@ -1,69 +1,50 @@
 import streamlit as st
-import requests
-from bs4 import BeautifulSoup
-import json
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
 from urllib.parse import quote_plus
+import time
 
 # ===============================
-# HELPER FUNCTIONS
+# SELENIUM HELPERS
 # ===============================
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+def init_driver():
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")  # Run in background
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+    return driver
 
-def build_search_url(template, query):
-    return template.replace("{query}", quote_plus(query))
+def search_retailer(driver, template_url, query, limit=5):
+    url = template_url.replace("{query}", quote_plus(query))
+    driver.get(url)
+    time.sleep(3)  # wait for products to load
+    results = []
 
-def get_product_links(search_url, limit=5):
-    try:
-        html = requests.get(search_url, headers=HEADERS, timeout=10).text
-    except:
-        return []
-    soup = BeautifulSoup(html, "html.parser")
-    base = search_url.split("/")[0] + "//" + search_url.split("/")[2]
-    links = set()
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if any(x in href for x in ["/product/", "/prd/", "/p/"]):
-            if href.startswith("/"):
-                href = base + href
-            links.add(href)
-        if len(links) >= limit:
-            break
-    return list(links)
-
-def extract_product_data(url):
-    try:
-        html = requests.get(url, headers=HEADERS, timeout=10).text
-        soup = BeautifulSoup(html, "html.parser")
-        for script in soup.find_all("script", type="application/ld+json"):
-            try:
-                data = json.loads(script.string or "{}")
-            except:
-                continue
-            if isinstance(data, dict) and data.get("@type") == "Product":
-                offers = data.get("offers", {})
-                return {
-                    "name": data.get("name"),
-                    "price": offers.get("price"),
-                    "currency": offers.get("priceCurrency", ""),
-                    "image": data.get("image"),
-                    "url": url
-                }
-    except:
-        pass
-    return None
+    # Simple example: find all product links
+    # Adjust selectors based on retailer site structure
+    product_elements = driver.find_elements(By.XPATH, "//a[contains(@href,'/product') or contains(@href,'/prd')]")
+    for p in product_elements[:limit]:
+        name = p.text
+        link = p.get_attribute("href")
+        results.append({"name": name, "url": link})
+    return results
 
 # ===============================
 # STREAMLIT APP
 # ===============================
 def main():
     st.set_page_config(page_title="Fashion Skyscanner", layout="wide")
-    st.title("🛍️ Fashion Skyscanner MVP")
+    st.title("🛍️ Fashion Skyscanner (Selenium MVP)")
 
-    # Initialize default retailers
+    # Initialize retailers
     if "retailers" not in st.session_state:
         st.session_state.retailers = [
             {"name": "ASOS", "search_url": "https://www.asos.com/search/?q={query}"},
-            {"name": "Uniqlo", "search_url": "https://www.uniqlo.com/uk/en/search/?q={query}"}
+            {"name": "Terraces Menswear", "search_url": "https://www.terracesmenswear.co.uk/index.php?route=product/search&search={query}"}
         ]
 
     # Sidebar - add retailer
@@ -87,29 +68,25 @@ def main():
     # Main search
     query = st.text_input("Search for a clothing item (e.g., white t-shirt)")
     if st.button("Search") and query:
+        driver = init_driver()
         results = []
-        with st.spinner("Searching retailers..."):
-            for r in st.session_state.retailers:
-                search_url = build_search_url(r["search_url"], query)
-                links = get_product_links(search_url)
-                for link in links:
-                    product = extract_product_data(link)
-                    if product and product["price"]:
-                        product["retailer"] = r["name"]
-                        results.append(product)
+        for r in st.session_state.retailers:
+            res = search_retailer(driver, r["search_url"], query)
+            for item in res:
+                item["retailer"] = r["name"]
+                results.append(item)
+        driver.quit()
 
         # Display results
         if results:
-            cols = st.columns(4)
+            cols = st.columns(3)
             for i, item in enumerate(results):
-                with cols[i % 4]:
-                    st.image(item["image"], use_container_width=True)
+                with cols[i % 3]:
                     st.markdown(f"**{item['name']}**")
-                    st.markdown(f"💷 {item['price']} {item['currency']}")
-                    st.caption(item["retailer"])
                     st.markdown(f"[View Product]({item['url']})")
         else:
             st.warning("No results found.")
 
 if __name__ == "__main__":
     main()
+
